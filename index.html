@@ -1,285 +1,283 @@
 <!doctype html>
 <html lang="es">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Binary Cam Translator AR (Framed)</title>
-<style>
-  body { margin:0; background:#000; font-family: system-ui, -apple-system, Segoe UI, Roboto; color:#eaeaea; }
-  .container { position:relative; width:100vw; height:100vh; overflow:hidden; }
-  video { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
-
-  /* Overlay canvas (solo dibuja UI y texto) */
-  canvas { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
-
-  /* Panel inferior de salida */
-  .bottom {
-    position:absolute; left:50%; transform:translateX(-50%);
-    bottom:14px; width:min(920px, calc(100% - 24px));
-    background:rgba(0,0,0,.55); border:1px solid rgba(255,255,255,.18);
-    border-radius:16px; padding:10px 12px;
-    backdrop-filter: blur(6px);
-  }
-  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-  button {
-    background:#222; color:#eaeaea; border:1px solid #333; border-radius:12px;
-    padding:8px 12px; font-size:14px; cursor:pointer;
-  }
-  button:disabled { opacity:.5; cursor:default; }
-  .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
-  .pill { padding:3px 10px; border-radius:999px; border:1px solid rgba(255,255,255,.18); background:rgba(0,0,0,.35); font-size:13px; }
-  .out {
-    margin-top:8px; padding:10px 12px;
-    border-radius:14px; border:1px solid rgba(255,255,255,.18);
-    background:rgba(0,0,0,.35);
-    font-size:18px;
-  }
-  .hint { font-size:13px; opacity:.8; }
-</style>
-</head>
-
-<body>
-<div class="container">
-  <video id="video" autoplay playsinline muted></video>
-  <canvas id="overlay"></canvas>
-
-  <div class="bottom">
-    <div class="row">
-      <button id="start">Iniciar</button>
-      <button id="stop" disabled>Parar</button>
-      <span id="status" class="pill">Listo</span>
-      <span class="pill hint">Apunta el binario dentro del marco</span>
-    </div>
-
-    <div class="out mono" id="txtOut">(traducción aquí)</div>
-    <div class="hint mono" id="binOut" style="margin-top:8px; opacity:.65;"></div>
-  </div>
-</div>
-
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
-
-<script>
-const video = document.getElementById('video');
-const canvas = document.getElementById('overlay');
-const ctx = canvas.getContext('2d');
-
-const btnStart = document.getElementById('start');
-const btnStop  = document.getElementById('stop');
-const statusEl = document.getElementById('status');
-const txtOut = document.getElementById('txtOut');
-const binOut = document.getElementById('binOut');
-
-let stream = null;
-let worker = null;
-let scanning = false;
-
-// Tamaño y posición del “marco” (ROI) en proporción a la pantalla
-// Ajusta si lo quieres más grande/pequeño o más arriba/abajo:
-const ROI = {
-  wPct: 0.82,   // ancho del marco (82% del ancho pantalla)
-  hPct: 0.18,   // alto del marco (18% del alto pantalla)
-  yPct: 0.42    // centro vertical del marco (0.5 = centro pantalla)
-};
-
-function setStatus(s){ statusEl.textContent = s; }
-
-function resizeCanvas() {
-  canvas.width  = window.innerWidth;
-  canvas.height = window.innerHeight;
-}
-window.addEventListener('resize', resizeCanvas);
-
-async function initOCR() {
-  setStatus("Cargando OCR…");
-  worker = await Tesseract.createWorker();
-  await worker.loadLanguage('eng');
-  await worker.initialize('eng');
-  await worker.setParameters({
-    tessedit_char_whitelist: '01 ',
-    preserve_interword_spaces: '1'
-  });
-  setStatus("OCR listo");
-}
-
-function roiRect() {
-  const w = Math.floor(canvas.width  * ROI.wPct);
-  const h = Math.floor(canvas.height * ROI.hPct);
-  const x = Math.floor((canvas.width - w) / 2);
-  const y = Math.floor((canvas.height * ROI.yPct) - (h / 2));
-  return { x, y, w, h };
-}
-
-function drawUI(translatedText) {
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-
-  const {x,y,w,h} = roiRect();
-
-  // Marco
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = "rgba(0,255,120,0.85)";
-  ctx.strokeRect(x, y, w, h);
-
-  // “corners” (más estilo escáner)
-  const c = 18;
-  ctx.lineWidth = 5;
-  ctx.strokeStyle = "rgba(0,255,120,0.95)";
-  // TL
-  ctx.beginPath(); ctx.moveTo(x, y+c); ctx.lineTo(x, y); ctx.lineTo(x+c, y); ctx.stroke();
-  // TR
-  ctx.beginPath(); ctx.moveTo(x+w-c, y); ctx.lineTo(x+w, y); ctx.lineTo(x+w, y+c); ctx.stroke();
-  // BL
-  ctx.beginPath(); ctx.moveTo(x, y+h-c); ctx.lineTo(x, y+h); ctx.lineTo(x+c, y+h); ctx.stroke();
-  // BR
-  ctx.beginPath(); ctx.moveTo(x+w-c, y+h); ctx.lineTo(x+w, y+h); ctx.lineTo(x+w, y+h-c); ctx.stroke();
-
-  // Texto “traducido” justo debajo del marco (overlay)
-  if (translatedText && translatedText.length >= 2) {
-    ctx.font = '28px ui-monospace, Menlo, Consolas, monospace';
-    ctx.fillStyle = 'rgba(0,255,120,0.92)';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-
-    // Sombra sutil para legibilidad
-    ctx.shadowColor = 'rgba(0,0,0,0.75)';
-    ctx.shadowBlur = 8;
-    ctx.fillText(translatedText, x + w/2, y + h + 10);
-    ctx.shadowBlur = 0;
-  }
-}
-
-// Limpieza OCR
-function cleanBinary(t) {
-  return t
-    .replace(/[oO]/g,'0')
-    .replace(/[iIlL]/g,'1')
-    .replace(/[^01 ]/g,'')
-    .replace(/\s+/g,' ')
-    .trim();
-}
-
-function binaryToAscii(bin) {
-  const bits = bin.replace(/\s+/g,'');
-  let out = '';
-  for (let i=0;i+8<=bits.length;i+=8) {
-    const byte = bits.slice(i,i+8);
-    const code = parseInt(byte,2);
-    if (code === 32) out += ' ';
-    else if (code >= 33 && code <= 126) out += String.fromCharCode(code);
-  }
-  return out;
-}
-
-// Captura ROI del vídeo y lo pasa al OCR
-async function scanOnce() {
-  if (!stream || scanning) return;
-  if (!video.videoWidth || !video.videoHeight) return;
-
-  scanning = true;
-  try {
-    setStatus("Leyendo…");
-
-    // Creamos canvas temporal con el frame del vídeo (a resolución nativa del stream)
-    const tmp = document.createElement('canvas');
-    tmp.width = video.videoWidth;
-    tmp.height = video.videoHeight;
-    const tctx = tmp.getContext('2d', { willReadFrequently:true });
-    tctx.drawImage(video, 0, 0);
-
-    // Convertimos ROI de coords pantalla -> coords vídeo
-    // (asumiendo object-fit:cover; aproximación razonable)
-    // Para máxima precisión habría que calcular el recorte de cover exacto.
-    const {x,y,w,h} = roiRect();
-    const sx = Math.max(0, Math.floor(x / canvas.width  * tmp.width));
-    const sy = Math.max(0, Math.floor(y / canvas.height * tmp.height));
-    const sw = Math.min(tmp.width  - sx, Math.floor(w / canvas.width  * tmp.width));
-    const sh = Math.min(tmp.height - sy, Math.floor(h / canvas.height * tmp.height));
-
-    // Recortamos ROI a un canvas pequeño (mejor para OCR)
-    const roi = document.createElement('canvas');
-    roi.width = sw; roi.height = sh;
-    const rctx = roi.getContext('2d', { willReadFrequently:true });
-    rctx.drawImage(tmp, sx, sy, sw, sh, 0, 0, sw, sh);
-
-    // Umbral simple (blanco/negro) para ayudar al OCR
-    const img = rctx.getImageData(0,0,sw,sh);
-    const d = img.data;
-    for (let i=0;i<d.length;i+=4){
-      const lum = 0.2126*d[i] + 0.7152*d[i+1] + 0.0722*d[i+2];
-      const v = lum > 150 ? 255 : 0;
-      d[i]=d[i+1]=d[i+2]=v;
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Binary Cam Translator (mínimo)</title>
+  <style>
+    html, body { margin:0; height:100%; background:#000; overflow:hidden; }
+    .wrap { position:relative; width:100vw; height:100vh; }
+    video { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+    canvas { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+    /* Tap-to-start overlay (se oculta al arrancar) */
+    .start {
+      position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+      background:rgba(0,0,0,0.55); color:#eaeaea; font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;
+      text-align:center; padding:24px;
     }
-    rctx.putImageData(img,0,0);
+    .start button{
+      background:#1f1f1f; border:1px solid #3a3a3a; color:#eaeaea;
+      border-radius:14px; padding:12px 16px; font-size:16px; cursor:pointer;
+    }
+    .start p{ margin:10px 0 0; opacity:.8; font-size:13px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="ui"></canvas>
 
-    const { data } = await worker.recognize(roi);
-    const bin = cleanBinary(data.text || '');
-    const txt = binaryToAscii(bin);
+    <div id="startOverlay" class="start">
+      <div>
+        <button id="btnStart">Toca para iniciar la cámara</button>
+        <p>Coloca el binario dentro del cuadro. La traducción aparecerá debajo.</p>
+      </div>
+    </div>
+  </div>
 
-    // UI
-    binOut.textContent = bin ? `BIN: ${bin}` : "";
-    txtOut.textContent = txt ? txt : "(sin lectura)";
-    drawUI(txt);
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <script>
+    // ===== Ajustes rápidos =====
+    const ROI = {
+      wPct: 0.86,     // ancho del cuadro (porcentaje de pantalla)
+      hPct: 0.22,     // alto del cuadro
+      yCenterPct: 0.42// posición vertical del centro del cuadro (0.5 = centro)
+    };
 
-    setStatus(txt ? "OK" : "Apunta mejor");
-  } catch (e) {
-    console.error(e);
-    setStatus("Error");
-  } finally {
-    scanning = false;
-  }
-}
+    const SCAN_INTERVAL_MS = 950;     // cada cuánto intenta leer (ms)
+    const MIN_BITS = 24;              // mínimo de bits (sin espacios) para considerar lectura
+    const MIN_CONFIDENCE = 35;        // confianza mínima OCR (0..100 aprox), ajusta si quieres
 
-// Loop
-let loopTimer = null;
-function startLoop() {
-  if (loopTimer) clearInterval(loopTimer);
-  loopTimer = setInterval(scanOnce, 1100);
-}
-function stopLoop() {
-  if (loopTimer) clearInterval(loopTimer);
-  loopTimer = null;
-}
+    // Estilo del overlay
+    const GREEN = "rgba(0,255,120,0.92)";
+    const GREEN_SOFT = "rgba(0,255,120,0.60)";
 
-async function start() {
-  if (!navigator.mediaDevices?.getUserMedia) {
-    setStatus("Sin cámara");
-    return;
-  }
-  btnStart.disabled = true;
+    // ===== Elementos =====
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('ui');
+    const ctx = canvas.getContext('2d');
+    const btnStart = document.getElementById('btnStart');
+    const startOverlay = document.getElementById('startOverlay');
 
-  stream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: "environment" },
-    audio: false
-  });
-  video.srcObject = stream;
+    let stream = null;
+    let worker = null;
+    let busy = false;
+    let timer = null;
 
-  resizeCanvas();
-  drawUI("");
+    function resize() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      drawUI(""); // redibuja el marco al redimensionar
+    }
+    window.addEventListener('resize', resize);
+    resize();
 
-  if (!worker) await initOCR();
+    function roiRectScreen() {
+      const w = Math.floor(canvas.width * ROI.wPct);
+      const h = Math.floor(canvas.height * ROI.hPct);
+      const x = Math.floor((canvas.width - w) / 2);
+      const y = Math.floor(canvas.height * ROI.yCenterPct - h / 2);
+      return { x, y, w, h };
+    }
 
-  btnStop.disabled = false;
-  setStatus("Apunta al marco");
-  startLoop();
-}
+    // Calcula el mapeo correcto cuando el vídeo está en object-fit: cover
+    function mapScreenToVideoRect(screenRect) {
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      const sw = canvas.width;
+      const sh = canvas.height;
 
-function stop() {
-  stopLoop();
-  if (stream) stream.getTracks().forEach(t => t.stop());
-  stream = null;
-  video.srcObject = null;
-  btnStart.disabled = false;
-  btnStop.disabled = true;
-  setStatus("Parado");
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-  txtOut.textContent = "(traducción aquí)";
-  binOut.textContent = "";
-}
+      // Escala de cover: max para cubrir toda la pantalla
+      const scale = Math.max(sw / vw, sh / vh);
 
-btnStart.onclick = start;
-btnStop.onclick = stop;
+      // Tamaño renderizado del vídeo en pantalla
+      const rw = vw * scale;
+      const rh = vh * scale;
 
-resizeCanvas();
-drawUI("");
-</script>
+      // Offset del vídeo renderizado (se recorta por los lados o arriba/abajo)
+      const ox = (sw - rw) / 2;
+      const oy = (sh - rh) / 2;
+
+      // Convierte coords pantalla -> coords en el render -> coords en el vídeo original
+      const sx = (screenRect.x - ox) / scale;
+      const sy = (screenRect.y - oy) / scale;
+      const sw2 = screenRect.w / scale;
+      const sh2 = screenRect.h / scale;
+
+      // Clamps
+      const x = Math.max(0, Math.min(vw - 1, Math.floor(sx)));
+      const y = Math.max(0, Math.min(vh - 1, Math.floor(sy)));
+      const w = Math.max(1, Math.min(vw - x, Math.floor(sw2)));
+      const h = Math.max(1, Math.min(vh - y, Math.floor(sh2)));
+
+      return { x, y, w, h };
+    }
+
+    function drawUI(text, ok=true) {
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+
+      const {x,y,w,h} = roiRectScreen();
+
+      // Marco
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = ok ? GREEN : "rgba(255,180,90,0.85)";
+      ctx.strokeRect(x, y, w, h);
+
+      // Esquinas “scanner”
+      const c = 18;
+      ctx.lineWidth = 5;
+      ctx.strokeStyle = ok ? GREEN : "rgba(255,180,90,0.95)";
+      // TL
+      ctx.beginPath(); ctx.moveTo(x, y+c); ctx.lineTo(x, y); ctx.lineTo(x+c, y); ctx.stroke();
+      // TR
+      ctx.beginPath(); ctx.moveTo(x+w-c, y); ctx.lineTo(x+w, y); ctx.lineTo(x+w, y+c); ctx.stroke();
+      // BL
+      ctx.beginPath(); ctx.moveTo(x, y+h-c); ctx.lineTo(x, y+h); ctx.lineTo(x+c, y+h); ctx.stroke();
+      // BR
+      ctx.beginPath(); ctx.moveTo(x+w-c, y+h); ctx.lineTo(x+w, y+h); ctx.lineTo(x+w, y+h-c); ctx.stroke();
+
+      // Traducción debajo del marco
+      ctx.font = '28px ui-monospace, Menlo, Consolas, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+
+      // Caja sutil debajo (para legibilidad)
+      const boxY = y + h + 12;
+      const boxH = 46;
+      ctx.fillStyle = "rgba(0,0,0,0.45)";
+      ctx.strokeStyle = ok ? GREEN_SOFT : "rgba(255,180,90,0.55)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      roundRect(ctx, x, boxY, w, boxH, 12);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = ok ? GREEN : "rgba(255,210,160,0.95)";
+      ctx.shadowColor = 'rgba(0,0,0,0.75)';
+      ctx.shadowBlur = 8;
+      ctx.fillText(text && text.length ? text : "…", x + w/2, boxY + 8);
+      ctx.shadowBlur = 0;
+    }
+
+    function roundRect(ctx, x, y, w, h, r) {
+      const rr = Math.min(r, w/2, h/2);
+      ctx.moveTo(x+rr, y);
+      ctx.arcTo(x+w, y, x+w, y+h, rr);
+      ctx.arcTo(x+w, y+h, x, y+h, rr);
+      ctx.arcTo(x, y+h, x, y, rr);
+      ctx.arcTo(x, y, x+w, y, rr);
+      ctx.closePath();
+    }
+
+    function cleanBinary(raw) {
+      return (raw || "")
+        .replace(/[oO]/g,'0')
+        .replace(/[iIlL]/g,'1')
+        .replace(/[^01 ]/g,'')
+        .replace(/\s+/g,' ')
+        .trim();
+    }
+
+    function binaryToAscii(bin) {
+      const bits = bin.replace(/\s+/g,'');
+      let out = '';
+      for (let i=0; i+8 <= bits.length; i += 8) {
+        const byte = bits.slice(i, i+8);
+        const code = parseInt(byte, 2);
+        if (code === 32) out += ' ';
+        else if (code >= 33 && code <= 126) out += String.fromCharCode(code);
+        // si no imprimible, lo ignoramos (para no ensuciar)
+      }
+      return out.trim();
+    }
+
+    async function initOCR() {
+      worker = await Tesseract.createWorker();
+      await worker.loadLanguage('eng');
+      await worker.initialize('eng');
+      await worker.setParameters({
+        tessedit_char_whitelist: '01 ',
+        preserve_interword_spaces: '1'
+      });
+    }
+
+    function preprocessBW(c) {
+      const cctx = c.getContext('2d', { willReadFrequently:true });
+      const img = cctx.getImageData(0,0,c.width,c.height);
+      const d = img.data;
+
+      // Umbral simple (funciona bien si tu binario tiene alto contraste)
+      for (let i=0; i<d.length; i+=4) {
+        const lum = 0.2126*d[i] + 0.7152*d[i+1] + 0.0722*d[i+2];
+        const v = lum > 150 ? 255 : 0;
+        d[i]=d[i+1]=d[i+2]=v;
+      }
+      cctx.putImageData(img,0,0);
+    }
+
+    async function scanOnce() {
+      if (!stream || busy) return;
+      if (!video.videoWidth || !video.videoHeight) return;
+
+      busy = true;
+      try {
+        const sr = roiRectScreen();
+        const vr = mapScreenToVideoRect(sr);
+
+        // Recorta ROI del frame nativo del vídeo
+        const roi = document.createElement('canvas');
+        roi.width = vr.w;
+        roi.height = vr.h;
+        const rctx = roi.getContext('2d', { willReadFrequently:true });
+        rctx.drawImage(video, vr.x, vr.y, vr.w, vr.h, 0, 0, vr.w, vr.h);
+
+        preprocessBW(roi);
+
+        const { data } = await worker.recognize(roi);
+        const conf = typeof data.confidence === "number" ? data.confidence : 0;
+
+        const bin = cleanBinary(data.text);
+        const bitsCount = bin.replace(/\s+/g,'').length;
+
+        let txt = "";
+        let ok = false;
+
+        if (bitsCount >= MIN_BITS && conf >= MIN_CONFIDENCE) {
+          txt = binaryToAscii(bin);
+          ok = txt.length > 0;
+        }
+
+        drawUI(ok ? txt : "…", ok);
+
+      } catch (e) {
+        // Si hay error, mantenemos UI sin texto
+        drawUI("…", false);
+      } finally {
+        busy = false;
+      }
+    }
+
+    async function start() {
+      // Cámara
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" }, width:{ideal:1280}, height:{ideal:720} },
+        audio: false
+      });
+      video.srcObject = stream;
+
+      // OCR
+      if (!worker) await initOCR();
+
+      // UI
+      startOverlay.style.display = "none";
+      drawUI("…", true);
+
+      // Loop
+      if (timer) clearInterval(timer);
+      timer = setInterval(scanOnce, SCAN_INTERVAL_MS);
+    }
+
+    btnStart.addEventListener('click', start);
+  </script>
 </body>
 </html>
