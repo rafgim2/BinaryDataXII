@@ -3,22 +3,24 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <title>Binary Cam Translator (mínimo FIX)</title>
+  <title>Binary Cam Translator (Simple)</title>
   <style>
     html, body { margin:0; height:100%; background:#000; overflow:hidden; }
     .wrap { position:relative; width:100vw; height:100vh; }
     video { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
     canvas { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+
     .start {
       position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
       background:rgba(0,0,0,0.55); color:#eaeaea;
-      font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; text-align:center; padding:24px;
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;
+      text-align:center; padding:24px;
     }
     .start button{
       background:#1f1f1f; border:1px solid #3a3a3a; color:#eaeaea;
       border-radius:14px; padding:12px 16px; font-size:16px; cursor:pointer;
     }
-    .start p{ margin:10px 0 0; opacity:.8; font-size:13px; }
+    .start p{ margin:10px 0 0; opacity:.8; font-size:13px; line-height:1.35; }
   </style>
 </head>
 <body>
@@ -29,31 +31,40 @@
   <div id="startOverlay" class="start">
     <div>
       <button id="btnStart">Toca para iniciar la cámara</button>
-      <p>Coloca el binario dentro del cuadro. La traducción aparecerá debajo.</p>
+      <p>
+        Coloca el binario dentro del cuadro.<br>
+        La traducción aparece debajo.
+      </p>
     </div>
   </div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script>
-  // Ajustes
-  const ROI = { wPct: 0.88, hPct: 0.24, yCenterPct: 0.42 };
-  const SCAN_INTERVAL_MS = 1100;
-  const MIN_BITS = 16; // más permisivo (antes 24)
+  // ===== Ajustes (puedes tocarlos) =====
+  const ROI = {
+    wPct: 0.92,      // ancho del cuadro (92% del ancho pantalla)
+    hPct: 0.28,      // alto del cuadro
+    yCenterPct: 0.45 // posición vertical del centro (0.5 es el centro)
+  };
 
+  const SCAN_INTERVAL_MS = 1100; // cada cuánto intenta leer (ms)
+
+  // ===== Colores =====
   const GREEN = "rgba(0,255,120,0.92)";
   const GREEN_SOFT = "rgba(0,255,120,0.55)";
-  const AMBER = "rgba(255,190,90,0.9)";
 
+  // ===== Elementos =====
   const video = document.getElementById('video');
   const ui = document.getElementById('ui');
   const ctx = ui.getContext('2d');
-  const btnStart = document.getElementById('btnStart');
-  const startOverlay = document.getElementById('startOverlay');
 
-  // Offscreen: aquí pintamos el vídeo EXACTAMENTE como se ve (cover)
+  // Offscreen: pintamos el vídeo EXACTAMENTE como se ve (cover)
   const frame = document.createElement('canvas');
   const fctx = frame.getContext('2d', { willReadFrequently:true });
+
+  const btnStart = document.getElementById('btnStart');
+  const startOverlay = document.getElementById('startOverlay');
 
   let stream = null;
   let worker = null;
@@ -65,7 +76,7 @@
     ui.height = window.innerHeight;
     frame.width = window.innerWidth;
     frame.height = window.innerHeight;
-    drawUI("…", true);
+    drawUI("…", "BIN: ");
   }
   window.addEventListener('resize', resize);
   resize();
@@ -89,49 +100,8 @@
     c.closePath();
   }
 
-  function drawUI(text, ok=true) {
-    ctx.clearRect(0,0,ui.width,ui.height);
-    const {x,y,w,h} = roiRect();
-
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = ok ? GREEN : AMBER;
-    ctx.strokeRect(x, y, w, h);
-
-    // esquinas
-    const c = 18;
-    ctx.lineWidth = 5;
-    ctx.strokeStyle = ok ? GREEN : AMBER;
-    // TL
-    ctx.beginPath(); ctx.moveTo(x, y+c); ctx.lineTo(x, y); ctx.lineTo(x+c, y); ctx.stroke();
-    // TR
-    ctx.beginPath(); ctx.moveTo(x+w-c, y); ctx.lineTo(x+w, y); ctx.lineTo(x+w, y+c); ctx.stroke();
-    // BL
-    ctx.beginPath(); ctx.moveTo(x, y+h-c); ctx.lineTo(x, y+h); ctx.lineTo(x+c, y+h); ctx.stroke();
-    // BR
-    ctx.beginPath(); ctx.moveTo(x+w-c, y+h); ctx.lineTo(x+w, y+h); ctx.lineTo(x+w, y+h-c); ctx.stroke();
-
-    // caja de traducción debajo
-    const boxY = y + h + 12;
-    const boxH = 46;
-
-    ctx.fillStyle = "rgba(0,0,0,0.45)";
-    ctx.strokeStyle = ok ? GREEN_SOFT : "rgba(255,190,90,0.55)";
-    ctx.lineWidth = 2;
-    roundRect(ctx, x, boxY, w, boxH, 12);
-    ctx.fill(); ctx.stroke();
-
-    ctx.font = '28px ui-monospace, Menlo, Consolas, monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-    ctx.fillStyle = ok ? GREEN : "rgba(255,220,170,0.95)";
-    ctx.shadowColor = 'rgba(0,0,0,0.75)';
-    ctx.shadowBlur = 8;
-    ctx.fillText(text && text.length ? text : "…", x + w/2, boxY + 8);
-    ctx.shadowBlur = 0;
-  }
-
+  // Dibuja vídeo en frame con “cover” (igual que CSS object-fit: cover)
   function drawVideoCoverToFrame() {
-    // Dibuja el vídeo en 'frame' con el MISMO comportamiento que object-fit:cover
     const sw = frame.width, sh = frame.height;
     const vw = video.videoWidth, vh = video.videoHeight;
     if (!vw || !vh) return false;
@@ -147,16 +117,56 @@
     return true;
   }
 
-  function preprocessBW(c) {
-    const cctx = c.getContext('2d', { willReadFrequently:true });
-    const img = cctx.getImageData(0,0,c.width,c.height);
-    const d = img.data;
-    for (let i=0; i<d.length; i+=4) {
-      const lum = 0.2126*d[i] + 0.7152*d[i+1] + 0.0722*d[i+2];
-      const v = lum > 150 ? 255 : 0;
-      d[i]=d[i+1]=d[i+2]=v;
-    }
-    cctx.putImageData(img,0,0);
+  // Interfaz: cuadro + traducción debajo + (debug) binario leído
+  function drawUI(text, rawBinLine) {
+    ctx.clearRect(0,0,ui.width,ui.height);
+
+    const {x,y,w,h} = roiRect();
+
+    // Marco siempre verde
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = GREEN;
+    ctx.strokeRect(x, y, w, h);
+
+    // esquinas tipo escáner
+    const c = 18;
+    ctx.lineWidth = 5;
+    ctx.strokeStyle = GREEN;
+    // TL
+    ctx.beginPath(); ctx.moveTo(x, y+c); ctx.lineTo(x, y); ctx.lineTo(x+c, y); ctx.stroke();
+    // TR
+    ctx.beginPath(); ctx.moveTo(x+w-c, y); ctx.lineTo(x+w, y); ctx.lineTo(x+w, y+c); ctx.stroke();
+    // BL
+    ctx.beginPath(); ctx.moveTo(x, y+h-c); ctx.lineTo(x, y+h); ctx.lineTo(x+c, y+h); ctx.stroke();
+    // BR
+    ctx.beginPath(); ctx.moveTo(x+w-c, y+h); ctx.lineTo(x+w, y+h); ctx.lineTo(x+w, y+h-c); ctx.stroke();
+
+    // Caja de texto debajo (2 líneas)
+    const boxY = y + h + 12;
+    const boxH = 76;
+
+    ctx.fillStyle = "rgba(0,0,0,0.45)";
+    ctx.strokeStyle = GREEN_SOFT;
+    ctx.lineWidth = 2;
+    roundRect(ctx, x, boxY, w, boxH, 12);
+    ctx.fill(); ctx.stroke();
+
+    // Traducción
+    ctx.font = '28px ui-monospace, Menlo, Consolas, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = GREEN;
+    ctx.shadowColor = 'rgba(0,0,0,0.75)';
+    ctx.shadowBlur = 8;
+
+    ctx.fillText(text && text.length ? text : "…", x + w/2, boxY + 8);
+
+    // Debug: qué binario cree leer
+    ctx.font = '14px ui-monospace, Menlo, Consolas, monospace';
+    ctx.fillStyle = "rgba(0,255,120,0.72)";
+    ctx.fillText(rawBinLine || "", x + w/2, boxY + 44);
+
+    ctx.shadowBlur = 0;
   }
 
   function cleanBinary(raw) {
@@ -197,28 +207,25 @@
     busy = true;
     try {
       const okFrame = drawVideoCoverToFrame();
-      if (!okFrame) { busy=false; return; }
+      if (!okFrame) { busy = false; return; }
 
       const {x,y,w,h} = roiRect();
 
+      // Recorte ROI a canvas pequeño
       const roi = document.createElement('canvas');
       roi.width = w; roi.height = h;
-      roi.getContext('2d').drawImage(frame, x, y, w, h, 0, 0, w, h);
+      roi.getContext('2d', { willReadFrequently:true }).drawImage(frame, x, y, w, h, 0, 0, w, h);
 
-      preprocessBW(roi);
-
+      // OCR directo (sin umbral agresivo)
       const { data } = await worker.recognize(roi);
-      const bin = cleanBinary(data.text);
-      const bitsCount = bin.replace(/\s+/g,'').length;
 
-      if (bitsCount < MIN_BITS) {
-        drawUI("…", false);
-      } else {
-        const txt = binaryToAscii(bin);
-        drawUI(txt || "…", !!txt);
-      }
-    } catch {
-      drawUI("…", false);
+      const bin = cleanBinary(data.text);
+      const txt = binaryToAscii(bin);
+
+      drawUI(txt || "…", bin ? ("BIN: " + bin) : "BIN: (vacío)");
+
+    } catch (e) {
+      drawUI("…", "BIN: (error)");
     } finally {
       busy = false;
     }
@@ -226,14 +233,15 @@
 
   async function start() {
     stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: "environment" }, width:{ideal:1280}, height:{ideal:720} },
+      video: { facingMode: { ideal:"environment" }, width:{ideal:1280}, height:{ideal:720} },
       audio:false
     });
     video.srcObject = stream;
 
     if (!worker) await initOCR();
+
     startOverlay.style.display = "none";
-    drawUI("…", true);
+    drawUI("…", "BIN: ");
 
     if (timer) clearInterval(timer);
     timer = setInterval(scanOnce, SCAN_INTERVAL_MS);
