@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Binary Cam Translator AR</title>
+
+<style>
+  body {
+    margin:0;
+    background:#000;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto;
+    color:#eaeaea;
+  }
+
+  .container {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  video {
+    position:absolute;
+    top:0; left:0;
+    width:100%;
+    height:100%;
+    object-fit: cover;
+  }
+
+  canvas {
+    position:absolute;
+    top:0; left:0;
+    width:100%;
+    height:100%;
+    pointer-events: none;
+  }
+
+  .ui {
+    position:absolute;
+    bottom:16px;
+    left:50%;
+    transform:translateX(-50%);
+    background:rgba(0,0,0,.55);
+    backdrop-filter: blur(6px);
+    border-radius:16px;
+    padding:10px 14px;
+    display:flex;
+    gap:10px;
+    align-items:center;
+  }
+
+  button {
+    background:#222;
+    color:#eaeaea;
+    border:1px solid #333;
+    border-radius:12px;
+    padding:8px 12px;
+    font-size:14px;
+  }
+
+  .hint {
+    position:absolute;
+    top:14px;
+    left:50%;
+    transform:translateX(-50%);
+    font-size:13px;
+    opacity:.7;
+  }
+</style>
+</head>
+
+<body>
+<div class="container">
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="overlay"></canvas>
+
+  <div class="hint">Apunta al binario</div>
+
+  <div class="ui">
+    <button id="start">Iniciar</button>
+    <button id="stop" disabled>Parar</button>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+
+<script>
+const video = document.getElementById('video');
+const canvas = document.getElementById('overlay');
+const ctx = canvas.getContext('2d');
+
+const btnStart = document.getElementById('start');
+const btnStop  = document.getElementById('stop');
+
+let stream = null;
+let worker = null;
+let scanning = false;
+
+async function startCamera() {
+  stream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: "environment" },
+    audio: false
+  });
+  video.srcObject = stream;
+  btnStart.disabled = true;
+  btnStop.disabled = false;
+
+  resizeCanvas();
+  window.addEventListener('resize', resizeCanvas);
+
+  await initOCR();
+  scanLoop();
+}
+
+function stopCamera() {
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = null;
+  btnStart.disabled = false;
+  btnStop.disabled = true;
+}
+
+function resizeCanvas() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+
+async function initOCR() {
+  worker = await Tesseract.createWorker();
+  await worker.loadLanguage('eng');
+  await worker.initialize('eng');
+  await worker.setParameters({
+    tessedit_char_whitelist: '01 ',
+    preserve_interword_spaces: '1'
+  });
+}
+
+function cleanBinary(t) {
+  return t
+    .replace(/[oO]/g,'0')
+    .replace(/[iIlL]/g,'1')
+    .replace(/[^01 ]/g,'')
+    .replace(/\s+/g,' ')
+    .trim();
+}
+
+function binaryToAscii(bin) {
+  const bits = bin.replace(/\s+/g,'');
+  let out = '';
+  for (let i=0;i+8<=bits.length;i+=8) {
+    const byte = bits.slice(i,i+8);
+    const code = parseInt(byte,2);
+    if (code === 32) out += ' ';
+    else if (code >= 33 && code <= 126) out += String.fromCharCode(code);
+  }
+  return out;
+}
+
+async function scanLoop() {
+  if (!stream) return;
+
+  if (!scanning) {
+    scanning = true;
+
+    const tmp = document.createElement('canvas');
+    tmp.width = video.videoWidth;
+    tmp.height = video.videoHeight;
+    const tctx = tmp.getContext('2d');
+    tctx.drawImage(video,0,0);
+
+    const { data } = await worker.recognize(tmp);
+    const bin = cleanBinary(data.text || '');
+    const txt = binaryToAscii(bin);
+
+    drawOverlay(txt);
+
+    scanning = false;
+  }
+
+  setTimeout(scanLoop, 1200);
+}
+
+function drawOverlay(text) {
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  if (!text || text.length < 2) return;
+
+  ctx.font = '32px ui-monospace, Menlo, Consolas, monospace';
+  ctx.fillStyle = 'rgba(0,255,120,0.85)';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  ctx.fillText(text, canvas.width/2, canvas.height/2);
+}
+
+btnStart.onclick = startCamera;
+btnStop.onclick = stopCamera;
+</script>
+</body>
+</html>
